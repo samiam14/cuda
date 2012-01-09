@@ -44,7 +44,19 @@ void host_shift_cypher(unsigned int *input_array, unsigned int *output_array, un
 // This kernel implements a per element shift
 __global__ void shift_cypher(unsigned int *input_array, unsigned int *output_array, unsigned int shift_amount, unsigned int alphabet_max, unsigned int array_length)
 {
-  // TODO your code here
+	// Calculate global thread index and check bounds
+	unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if(i >= array_length)
+		return;
+	
+	// Copied from above (host_shift_cypher)
+	int element = input_array[i];
+	int shifted = element + shift_amount;
+	if(shifted > alphabet_max)
+	{
+	  shifted = shifted % (alphabet_max + 1);
+	}
+	output_array[i] = shifted;
 }
 
 
