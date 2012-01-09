@@ -22,8 +22,9 @@
 const int maxUlps = 1000;
 
 event_pair timer;
-  
-float4 force_calc(float4 A, float4 B) 
+
+// Decorate function with __host__ and __device__ to access from GPU and CPU
+__host__ __device__ float4 force_calc(float4 A, float4 B) 
 {
   float x = B.x - A.x;
   float y = B.y - A.y;
@@ -59,31 +60,74 @@ void host_force_eval(float4 *set_A, float4 *set_B, int * indices, float4 *force_
 
 __global__ void force_eval(float4 *set_A, float4 *set_B, int * indices, float4 *force_vectors, int array_length)
 {
-  // TODO your code here ...
-}
+	// Calculate global thread index and check bounds
+	unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if(i >= array_length)
+		return;
 
+	// Calculate forces similar to above (host_force_eval)
+	if(indices[i] >= array_length || indices[i] < 0) {
+		force_vectors[i] = make_float4(0.0, 0.0, 0.0, 0.0);
+	} else {
+		force_vectors[i] = force_calc(set_A[i], set_B[indices[i]]);
+	}
+}
 
 
 void host_charged_particles(float4 *h_set_A, float4 *h_set_B, int *h_indices, float4 *h_force_vectors, int num_elements)
 { 
-  // TODO your code here ...
-  
-  start_timer(&timer);
-  // launch kernel
-  
-  // the actual kernel launch should go here, so that the time it took is measured 
-
-  check_launch("gpu force eval");
-  stop_timer(&timer,"gpu force eval");
-  
-  // TODO more code here...
+	// Device pointers
+	float4 *d_set_A = 0;
+	float4 *d_set_B = 0;
+	int *d_indices = 0;
+	float4 *d_force_vectors = 0;
+	
+	int num_bytes = num_elements * sizeof(float4);
+	
+	// CUDA memory init
+	cudaMalloc((void**)&d_set_A, num_bytes);
+	cudaMalloc((void**)&d_set_B, num_bytes);
+	cudaMalloc((void**)&d_indices, num_elements * sizeof(int));
+	cudaMalloc((void**)&d_force_vectors, num_bytes);
+	
+	// Check memory allocation
+	if(d_set_A == 0 || d_set_B == 0 || d_indices == 0 || d_force_vectors == 0) {
+		printf("error allocating memory\n");
+		exit(1);
+	}
+	
+	// CUDA memory copy (host to device)
+	cudaMemcpy(d_set_A, h_set_A, num_bytes, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_set_B, h_set_B, num_bytes, cudaMemcpyHostToDevice);
+	cudaMemcpy(d_indices, h_indices, num_elements * sizeof(int), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_force_vectors, h_force_vectors, num_bytes, cudaMemcpyHostToDevice);
+	
+	// Grid size and block size set-up
+	int block_size = 512;
+	int num_blocks = (num_elements + block_size - 1) / block_size;
+	
+	start_timer(&timer);
+	// launch kernel
+	force_eval<<< num_blocks, block_size >>>(d_set_A, d_set_B, d_indices, d_force_vectors, num_elements);
+	
+	check_launch("gpu force eval");
+	stop_timer(&timer,"gpu force eval");
+	
+	// CUDA memory copy (device to host)
+	cudaMemcpy(h_force_vectors, d_force_vectors, num_bytes, cudaMemcpyDeviceToHost);
+	
+	// CUDA memory cleanup
+	cudaFree(d_set_A);
+	cudaFree(d_set_B);
+	cudaFree(d_indices);
+	cudaFree(d_force_vectors);
 }
 
 
 int main(void)
 {
-  // create arrays of 4M elements
-  int num_elements =  1 << 22;
+  // create arrays of 2M elements
+  int num_elements =  1 << 21;
 
   // pointers to host & device arrays
   float4 *h_set_A = 0;
