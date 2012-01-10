@@ -67,7 +67,12 @@ __global__ void device_graph_propogate(unsigned int *graph_indices,
 	if(i >= array_length)
 		return;
 	
-	
+	float sum = 0.f; 
+	for(int j = graph_indices[i]; j < graph_indices[i+1]; j++)
+	{
+		sum += graph_nodes_in[graph_edges[j]] * inv_edges_per_node[graph_edges[j]];
+	}
+	graph_nodes_out[i] = 0.5f / (float)array_length + 0.5f * sum;
 }
 
 
@@ -108,7 +113,14 @@ void device_graph_iterate(unsigned int *h_graph_indices,
 	
 	start_timer(&timer);
 	
-	// TODO your device code should go here, so you can measure how long it takes
+	int block_size = 512;
+	int num_blocks = (num_elements + block_size - 1) / block_size;
+	
+	assert((nr_iterations % 2) == 0);
+	for(int i = 0; i < nr_iterations; i += 2) {
+		device_graph_propogate<<< num_blocks, block_size >>>(d_graph_indices, d_graph_edges, d_graph_nodes_input, d_graph_nodes_result, d_inv_edges_per_node, num_elements);
+		device_graph_propogate<<< num_blocks, block_size >>>(d_graph_indices, d_graph_edges, d_graph_nodes_result, d_graph_nodes_input, d_inv_edges_per_node, num_elements);
+	}
 	
 	check_launch("gpu graph propagate");
 	stop_timer(&timer,"gpu graph propagate");
