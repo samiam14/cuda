@@ -55,7 +55,7 @@ event_pair timer;
 // Overall there cannot be more than 4B bins, so we can just concatenate the bin
 // indices into a single uint.
 
-unsigned int bin_index(float3 particle, int3 gridding) 
+__host__ __device__ unsigned int bin_index(float3 particle, int3 gridding) 
 {
   unsigned int x_index = (unsigned int)(particle.x * (1 << gridding.x));
   unsigned int y_index = (unsigned int)(particle.y * (1 << gridding.y));
@@ -143,23 +143,70 @@ __global__ void initialize(T *array,T value, unsigned int array_length)
   }
 }
 
-void device_binning(float3 * h_particles, int * h_bins, int * h_bin_counters, int3 gridding, int num_particles, int num_bins, int bin_size)
+__global__ void particle_binning(float3 *particles, int *bins, unsigned int *bin_counters, int3 gridding, int num_particles, int bin_size)
 {
-  // TODO: your implementation here
+	// Global id and bounds checking
+	int gid = blockIdx.x * blockDim.x + threadIdx.x;
+	if(gid >= num_particles) {
+		return;
+	}
+	
+	unsigned int bin = bin_index(particles[gid], gridding);
+	unsigned int offset = atomicInc(&bin_counters[bin], bin_size); // Should check for overflow, but the host function does that already
+	bins[bin * bin_size + offset] = gid;
+}
 
-	// How do I call a templated kernel? It's actually easy...
-	// int* array;
-	// int value = 0;
-	// int array_length = 0;
-	// initialize<<<griddim,blockdim>>>(array, value, array_length);
-	// The compiler will figure out the types of your arguments and codegen a implementation for each type you use.
+void device_binning(float3 * h_particles, int * h_bins, int * h_bin_counters, int3 gridding, int num_particles, int num_bins, unsigned int bin_size)
+{
+	// Device pointers
+	float3 *d_particles = 0;
+	int *d_bins = 0;
+	unsigned int *d_bin_counters = 0;
+	
+	// Cuda memory allocation
+	cudaMalloc((void**)&d_particles, num_particles * sizeof(float3));
+	cudaMalloc((void**)&d_bins, num_bins * bin_size * sizeof(unsigned int));
+	cudaMalloc((void**)&d_bin_counters, num_bins * sizeof(unsigned int));
+	
+	if(d_particles == 0 || d_bins == 0 || d_bin_counters == 0) {
+		printf("error allocating memory");
+		exit(1);
+	}
+	
+	// Cuda memory copy (host to device)
+	cudaMemcpy(d_particles, h_particles, num_particles * sizeof(float3), cudaMemcpyHostToDevice);
+	
+	// Grid dimensions
+	int block_size = 512;
+	int num_blocks_counters = (num_bins + block_size - 1) / block_size;
+	int num_blocks_bins = (num_bins * bin_size + block_size - 1) / block_size;
+	int num_blocks_particles = (num_particles + block_size - 1) / block_size;
+	
+	// Initialize the counters (shpould be done with cudaMemset, but use the templated function since its available)
+	initialize<<< num_blocks_counters, block_size >>>(d_bin_counters, (unsigned int)0, num_bins);
+	initialize<<< num_blocks_bins, block_size >>>(d_bins, -1, num_bins * bin_size);
+	
+	start_timer(&timer);
+	
+	// Do the binning
+	particle_binning<<< num_blocks_particles, block_size >>>(d_particles, d_bins, d_bin_counters, gridding, num_particles, bin_size);
+	
+	stop_timer(&timer, "gpu binning");
+	
+	// Cuda memory copy (device to host)
+	cudaMemcpy(h_bins, d_bins, num_bins * bin_size * sizeof(int), cudaMemcpyDeviceToHost);
+	cudaMemcpy(h_bin_counters, d_bin_counters, num_bins * sizeof(int), cudaMemcpyDeviceToHost);
 
+	// Cuda deallocation
+	cudaFree(d_particles);
+	cudaFree(d_bins);
+	cudaFree(d_bin_counters);
 }
 
 int main(void)
 {  
-  // create arrays of 8M elements
-  int num_particles = 8*1024*1024;
+  // create arrays of 2M elements
+  int num_particles = 1<<22;
   int log_bpd = 6;
   int bins_per_dim = 1 << log_bpd;
   unsigned int num_bins = bins_per_dim*bins_per_dim*bins_per_dim;
